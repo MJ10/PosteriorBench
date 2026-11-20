@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # The lock takes torch for Linux from the CUDA 12.8 index. A CI runner has no GPU, so the
+      # same torch version is installed from the CPU index instead.
+      - name: Install the locked dependencies, with the CPU build of torch
+        run: |
+          uv sync --locked --no-install-package torch
+          uv pip install "torch==2.11.0" --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run pyright
+        run: uv run --no-sync pyright
+
+      # The tests that read the dataset on the Hub fail, and do not skip, if it cannot be read.
+      - name: Run tests
+        env:
+          POSTERIORBENCH_REQUIRE_HUB: "1"
+        run: uv run --no-sync pytest tests/ -v
