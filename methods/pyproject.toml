@@ -54,6 +54,9 @@ path = "posteriorbench_methods/__init__.py"
 packages = ["posteriorbench_methods"]
 
 [tool.uv]
+# Copy packages into the venv instead of hard-linking them from the uv cache: on the Mila cluster's
+# BeeGFS $SCRATCH, jobs importing hard-linked files at once failed with FileNotFoundError.
+link-mode = "copy"
 # The versions of numpy and wandb that the lock takes.
 constraint-dependencies = ["numpy==2.3.5", "wandb==0.28.0"]
 
