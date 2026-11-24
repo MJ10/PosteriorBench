@@ -2,10 +2,12 @@
 # Prepares a cluster for PosteriorBench jobs. Run it on a login node (they have internet access),
 # once per cluster, after the first `cluv sync`:
 #
-#   cluv run mila bash scripts/setup_cluster.sh
+#   cluv run rorqual bash scripts/setup_cluster.sh
 #
-# On Killarney and Trillium, where the project lives on $SCRATCH (CLUSTERS.md):
+# Where the project lives on $SCRATCH (Mila, Killarney, Trillium: CLUSTERS.md), which `cluv run`
+# doesn't follow:
 #
+#   ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 #   ssh killarney 'bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 #
 # It installs the environment of methods/ (cluv sync only installs the root project's), and

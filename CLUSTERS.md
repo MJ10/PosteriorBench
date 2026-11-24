@@ -37,15 +37,17 @@ corpus hits of the 108 scored pairs (3.4 GB) into `$SCRATCH/.cache/huggingface`,
 node, since most compute nodes have no internet:
 
 ```bash
-cluv sync mila
-cluv run mila bash scripts/setup_cluster.sh
+cluv sync rorqual
+cluv run rorqual bash scripts/setup_cluster.sh
 ```
 
-Repeat for every cluster you use (`cluv run rorqual …`, …). On Killarney and Trillium the project
-lives on `$SCRATCH` (jobs can't start from `/home` there), which `cluv run` does not follow. Use ssh
-for those two:
+Repeat for every cluster you use. On Mila, Killarney and Trillium the project lives on `$SCRATCH`
+(Mila: your 100 GB `$HOME` quota is full; Killarney and Trillium: jobs can't start from `/home`),
+which `cluv run` does not follow. Use ssh for those:
 
 ```bash
+cluv sync mila
+ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 ssh killarney 'bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 ```
 
@@ -124,7 +126,7 @@ sit idle. Prefer the other clusters for `methods/`.
 
 | Cluster | Account(s) | Notes |
 |---|---|---|
-| mila | (none) | compute nodes online; default `long` partition |
+| mila | (none) | compute nodes online; default `long` partition; project and uv cache on `$SCRATCH` |
 | rorqual, fir, nibi | `rrg-bengioy-ad`, `def-bengioy` | one job per account, the first to start is kept; fir and nibi compute nodes are online |
 | narval | `def-bengioy` | |
 | trillium-gpu | `rrg-bengioy-ad` | project on `$SCRATCH/repos/PosteriorBench` |

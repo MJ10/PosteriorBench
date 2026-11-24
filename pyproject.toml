@@ -154,7 +154,9 @@ gpus = "1"
 [tool.cluv.clusters.mila]
 # https://docs.mila.quebec/technical_reference/clusters/mila/
 # Compute nodes have internet access.
-env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online" }
+# The project, its venvs and the uv cache are on $SCRATCH: the 100 GB $HOME quota is full.
+project_dir = "$SCRATCH/repos/PosteriorBench"
+env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online", UV_CACHE_DIR = "$SCRATCH/.cache/uv" }
 
 [tool.cluv.clusters.tamia]
 # https://docs.alliancecan.ca/wiki/TamIA
