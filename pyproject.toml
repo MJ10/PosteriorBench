@@ -154,9 +154,12 @@ gpus = "1"
 [tool.cluv.clusters.mila]
 # https://docs.mila.quebec/technical_reference/clusters/mila/
 # Compute nodes have internet access.
-# The project, its venvs and the uv cache are on $SCRATCH: the 100 GB $HOME quota is full.
+# The project and its venvs are on $SCRATCH: the 100 GB $HOME quota is full. New dependencies
+# are installed by scripts/setup_cluster.sh with UV_CACHE_DIR on $SCRATCH (CLUSTERS.md). Don't set
+# UV_CACHE_DIR here: cluv then runs `uv sync --reinstall` on every new commit, which replaces
+# torch's files under running jobs.
 project_dir = "$SCRATCH/repos/PosteriorBench"
-env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online", UV_CACHE_DIR = "$SCRATCH/.cache/uv" }
+env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online" }
 
 [tool.cluv.clusters.tamia]
 # https://docs.alliancecan.ca/wiki/TamIA

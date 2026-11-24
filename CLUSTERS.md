@@ -53,7 +53,9 @@ ssh killarney 'bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 
 Jobs run `uv run --no-sync`: they use the environments that `cluv sync` (root project) and
 `setup_cluster.sh` (`methods/`) installed, and never write to them, so that the tasks of a job array can't
-re-install packages under each other. If you change the dependencies of `methods/`, run the setup again.
+re-install packages under each other. If you change the dependencies of either project, run the
+setup again (on Mila, with the command above: the uv cache in your full `$HOME` can't take new packages).
+Don't run `cluv sync` or `cluv submit` while jobs are still importing on a cluster where the dependencies just changed.
 
 `$SCRATCH` is purged on DRAC clusters (files unused for 60 days). If a job fails with
 `OfflineModeIsEnabled` or `LocalEntryNotFoundError`, the cache is gone: run the setup again.
