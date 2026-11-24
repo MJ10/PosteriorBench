@@ -55,6 +55,15 @@ uv run posteriorbench-methods gfn reselect --rule highest-mean-log-reward \
 | `generation_batch_size` | 500 | responses generated in one forward pass |
 | `forward_batch_size` | 20 | responses in one teacher-forced pass of the policy |
 
+Settings added after the paper, off by default ([FOLLOWUPS.md](FOLLOWUPS.md) gives the papers they come from and their results):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `corpus_budget_fraction` | 0 | before the first update, buy ⌊f min(training_budgets) / (1/p̂(S) + 1)⌋ corpus hits, each charged 1/p̂(S) and one p-scoring |
+| `corpus_probability` | 0 | a group is drawn from those corpus hits with this probability (both settings are 0 or both positive); it costs what a replayed group costs |
+| `loss_function` | `square` | `linex`: each SubTB residual d is penalized by 2 (e^{-a d} + a d - 1) / a^2, zero-avoiding, instead of d^2 |
+| `loss_shape` | 1.0 | a of `linex` |
+
 What the settings do not say:
 
 - The adapters sit on the four attention projections of a full-attention layer, on `in_proj_qkv` and `out_proj` of a linear-attention layer, and on `up_proj` and `down_proj` of every feed-forward network: 108 modules in Qwen3.5-0.8B. Their second factor starts at zero, and dropout is off everywhere.
