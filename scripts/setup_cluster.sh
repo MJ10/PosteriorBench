@@ -7,7 +7,7 @@
 # Where the project lives on $SCRATCH (Mila, Killarney, Trillium: CLUSTERS.md), which `cluv run`
 # doesn't follow:
 #
-#   ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
+#   ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv UV_LINK_MODE=copy bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 #   ssh killarney 'bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 #
 # It installs the environment of methods/ (cluv sync only installs the root project's), and

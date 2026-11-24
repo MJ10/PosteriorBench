@@ -43,11 +43,13 @@ cluv run rorqual bash scripts/setup_cluster.sh
 
 Repeat for every cluster you use. On Mila, Killarney and Trillium the project lives on `$SCRATCH`
 (Mila: your 100 GB `$HOME` quota is full; Killarney and Trillium: jobs can't start from `/home`),
-which `cluv run` does not follow. Use ssh for those:
+which `cluv run` does not follow. Use ssh for those. On Mila, `UV_LINK_MODE=copy` keeps uv from hard-linking
+the venv's files into the cache: on Mila's BeeGFS, jobs importing hard-linked files at once failed with
+`FileNotFoundError`. Elsewhere hard links are fine, and they save space in a small `$HOME` (48 GiB on Fir):
 
 ```bash
 cluv sync mila
-ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
+ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv UV_LINK_MODE=copy bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 ssh killarney 'bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 ```
 
