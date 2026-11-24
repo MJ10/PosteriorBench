@@ -194,7 +194,7 @@ class Training:
         losses: list[float] = []
         rows: list[dict[str, Any]] = []
         for plan in plans:
-            draws = None if plan.replay else next(fresh_draws)
+            draws = None if plan.temperature is None else next(fresh_draws)
             loss, responses, logq = self.train_group(plan, draws)
             losses.append(loss)
             rows.extend(

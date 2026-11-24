@@ -315,3 +315,41 @@ def test_training_rows_mark_corpus() -> None:
         plan, [_response([1, 7])], [-1.0], first=0
     )
     assert "corpus" not in paper[0]
+
+
+def test_train_update_draws_only_fresh_groups(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """An update with corpus groups draws fresh responses for the fresh groups alone, and hands
+    each group its own source."""
+    settings = Settings(corpus_budget_fraction=0.1, corpus_probability=0.5, groups_per_update=12)
+    run, _, events = _training(settings, available=10, probability=0.5)
+    run.corpus_pool = [_response([index, 7]) for index in range(5)]
+    run.buffer = [_response([1, 7])]  # a non-empty buffer
+    run.directory = tmp_path
+    parameter = torch.nn.Parameter(torch.zeros(1))
+    run.optimizer = torch.optim.AdamW([parameter])
+    drawn: list[Any] = []
+
+    def draw(groups: list[Any]) -> list[list[Any]]:
+        drawn.extend(groups)
+        return [[object()] for _ in groups]
+
+    run.policy = types.SimpleNamespace(
+        draw=draw, model=types.SimpleNamespace(parameters=lambda: [parameter])
+    )
+    run.context.stream_seed = lambda *parts: hash(parts) % 2**31
+    seen: list[tuple[Any, Any]] = []
+
+    def train_group(plan: Any, draws: Any) -> tuple[float, list[Any], list[float]]:
+        seen.append((plan, draws))
+        return 0.0, [_response([1, 7])], [-1.0]
+
+    monkeypatch.setattr(run, "train_group", train_group)
+    run.train_update()
+    assert len(seen) == 12 and any(plan.corpus for plan, _ in seen)
+    assert len(drawn) == sum(plan.temperature is not None for plan, _ in seen)
+    for plan, draws in seen:
+        assert (draws is None) == (plan.temperature is None)
+    update = [values for name, values in events if name == "update"][0]
+    assert update["corpus_groups"] == sum(plan.corpus for plan, _ in seen)
