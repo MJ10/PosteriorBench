@@ -17,6 +17,8 @@ To evaluate your own sampler, start with the [quickstart](#quickstart). To run t
 uv sync
 ```
 
+To run experiments on the Mila and DRAC clusters with [cluv](https://github.com/mila-iqia/cluv), see [CLUSTERS.md](CLUSTERS.md).
+
 Evaluation runs Qwen3.5-0.8B, so we recommend a GPU. [docs/protocol.md](docs/protocol.md#runtime) lists the installed versions and describes installation with pip.
 
 ## Quickstart

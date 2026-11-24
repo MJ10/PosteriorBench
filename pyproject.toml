@@ -102,3 +102,95 @@ line_length = 100
 # Fixed classification, so isort gives the same result whether or not the package is installed.
 known_first_party = ["posteriorbench"]
 extend_skip = ["methods"]
+
+
+###  --------------   CLUV CONFIG   --------------  ###
+# Running on the Mila and DRAC/PAICE clusters with cluv (https://github.com/mila-iqia/cluv).
+# How to use it: CLUSTERS.md. Reference: https://mila-iqia.github.io/cluv/.
+
+[tool.cluv]
+# All variables below can be overridden per cluster.
+
+# Job script used when `cluv submit` isn't given one. scripts/methods_job.sh is for methods/.
+job_script_path = "scripts/job.sh"
+
+# Where jobs write their Slurm log and results (one folder per job: <cluster>_<job id>).
+# `cluv sync` copies new results back to the `logs` symlink of your local project.
+results_path = "$SCRATCH/logs/posteriorbench"
+results_symlink = "logs"
+
+## The path where the project is cloned on clusters (default: same path relative to $HOME as here).
+# project_dir = "$HOME/<project_name>"
+
+[tool.cluv.env]
+# Environment variables of the jobs, on all clusters.
+# Compute nodes of most DRAC/PAICE clusters have no internet: uv, the Hub and wandb run offline.
+# scripts/setup_cluster.sh installs the environments and downloads the model and the corpus hits
+# into HF_HOME beforehand, on a login node.
+UV_OFFLINE = "1"
+HF_HUB_OFFLINE = "1"
+WANDB_MODE = "offline"
+HF_HOME = "$SCRATCH/.cache/huggingface"   # also set in scripts/setup_cluster.sh
+# The job scripts write results to $PB_RESULTS_PATH/<cluster>_<job id>: keep it equal to results_path.
+PB_RESULTS_PATH = "$SCRATCH/logs/posteriorbench"
+# Output roots of methods/ runs (checkpoints, up to 165 GB a run). Not copied back by `cluv sync`.
+PB_WORK_PATH = "$SCRATCH/posteriorbench/runs"
+
+[tool.cluv.local]
+# Fake "$SCRATCH" directory to use when not on a Slurm cluster.
+env = { SCRATCH = "$HOME/scratch" }
+
+[tool.cluv.sbatch_args]
+# sbatch flags applied on all clusters. The job scripts set cpus, memory and time; flags given to
+# `cluv submit` override both. `--vram=20GB` on the command line also races MIG slices on DRAC.
+requeue = true
+gpus = "1"
+
+###  --------------   Clusters Config   --------------  ###
+# Remove a cluster's table, or `cluv disable <cluster>`, to stop using it.
+# With more than one allocation on a cluster, a list of sbatch_args submits one job per allocation
+# and keeps the first one that starts.
+
+[tool.cluv.clusters.mila]
+# https://docs.mila.quebec/technical_reference/clusters/mila/
+# Compute nodes have internet access.
+env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online" }
+
+[tool.cluv.clusters.tamia]
+# https://docs.alliancecan.ca/wiki/TamIA
+# GPUs only come as whole nodes (4 H100s); scripts/benchmark.py runs one worker per GPU.
+sbatch_args = { account = "aip-bengioy", gpus = "h100:4", cpus-per-task = 16, mem = "0" }
+
+[tool.cluv.clusters.killarney]
+# https://docs.alliancecan.ca/wiki/Killarney
+# Jobs can't be submitted from /home, so the project lives on $SCRATCH.
+project_dir = "$SCRATCH/repos/PosteriorBench"
+sbatch_args = { account = "aip-bengioy" }
+
+[tool.cluv.clusters.vulcan]
+# https://docs.alliancecan.ca/wiki/Vulcan
+sbatch_args = { account = "aip-bengioy" }
+
+[tool.cluv.clusters.rorqual]
+# https://docs.alliancecan.ca/wiki/Rorqual
+sbatch_args = [{ account = "rrg-bengioy-ad" }, { account = "def-bengioy" }]
+
+[tool.cluv.clusters.fir]
+# https://docs.alliancecan.ca/wiki/Fir
+env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online" }
+sbatch_args = [{ account = "rrg-bengioy-ad" }, { account = "def-bengioy" }]
+
+[tool.cluv.clusters.nibi]
+# https://docs.alliancecan.ca/wiki/Nibi
+env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online" }
+sbatch_args = [{ account = "rrg-bengioy-ad" }, { account = "def-bengioy" }]
+
+[tool.cluv.clusters.trillium-gpu]
+# https://docs.alliancecan.ca/wiki/Trillium
+# $HOME isn't mounted on compute nodes, so the project lives on $SCRATCH.
+project_dir = "$SCRATCH/repos/PosteriorBench"
+sbatch_args = { account = "rrg-bengioy-ad" }
+
+[tool.cluv.clusters.narval]
+# https://docs.alliancecan.ca/wiki/Narval
+sbatch_args = { account = "def-bengioy" }  # Mila doesn't have an allocation on Narval anymore.

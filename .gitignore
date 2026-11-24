@@ -29,3 +29,6 @@ htmlcov/
 runs/
 *.pt
 *.safetensors
+
+# cluv: symlink to results_path
+/logs
