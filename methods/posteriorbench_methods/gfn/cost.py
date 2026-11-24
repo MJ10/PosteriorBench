@@ -5,6 +5,8 @@
     a replayed training response                    1                 2
     the m selection draws of a checkpoint (h hits)  m + h             3 m
     a threshold test of n draws                     n                 n
+    corpus hits, if bought (each)                   1 / p̂(S) + 1     1 / p̂(S) + 1
+    a training response from the corpus hits        1                 2
 
 A fresh response is generated and scored by p, which the reward needs for hits and misses. The
 forward pass of its loss is counted with the generation, because the original code computes the
@@ -13,6 +15,9 @@ forward and backward passes of the loss. A replayed response pays the forward pa
 and its backward pass to the budget alone. p on the misses among a checkpoint's selection draws,
 and q of the draws, are charged to the budget alone; composition adds p on the misses among its
 selection draws to the budget alone.
+
+A corpus hit is charged 1 / p̂(S) by the corpus access, and p of its prefixes, which its reward
+terms need, one more; trained on, it pays what a replayed response pays.
 
 An update of 375 fresh and 125 replayed responses costs 875 inferences and 2,125 passes.
 """
@@ -42,6 +47,23 @@ def replayed_responses(count: int) -> list[charges.ChargeSpec]:
             Category.TRAINING_FORWARD, count, f"loss forward of {count} replayed responses"
         ),
         charges.budget_only(count, f"loss backward of {count} replayed responses"),
+    ]
+
+
+def corpus_hit_scoring(count: int) -> list[charges.ChargeSpec]:
+    """p of every prefix of `count` corpus hits, one teacher-forced pass of the original model
+    each. The hits themselves are charged by the corpus access."""
+    return [charges.counted(Category.P_SCORING, count, f"p of {count} corpus hits")]
+
+
+def corpus_responses(count: int) -> list[charges.ChargeSpec]:
+    """`count` training responses drawn from the corpus hits: the loss's forward pass, and its
+    backward pass to the budget alone."""
+    return [
+        charges.counted(
+            Category.TRAINING_FORWARD, count, f"loss forward of {count} corpus-hit responses"
+        ),
+        charges.budget_only(count, f"loss backward of {count} corpus-hit responses"),
     ]
 
 

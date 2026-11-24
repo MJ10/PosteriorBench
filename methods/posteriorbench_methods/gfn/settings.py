@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import dataclasses
 
+LOSS_FUNCTIONS = ("square", "linex")
+# Settings beyond the paper's; their defaults reproduce the paper's runs.
+ADDED_SETTINGS = ("corpus_budget_fraction", "corpus_probability", "loss_function", "loss_shape")
+
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
@@ -27,7 +31,18 @@ class Settings:
     checkpoint_budget_counts: a checkpoint is also saved after the first update at which the
         budget count reaches each of these.
     generation_batch_size, forward_batch_size: the most responses in one generating and one
-        teacher-forced pass; they change memory use and the rounding of sums, not the method."""
+        teacher-forced pass; they change memory use and the rounding of sums, not the method.
+
+    Additions beyond the paper, each off by default (FOLLOWUPS.md):
+    corpus_budget_fraction, corpus_probability: before the first update, training buys
+        floor(corpus_budget_fraction min(training_budgets) / (1 / p̂(S) + 1)) corpus hits, true
+        posterior samples, at 1 / p̂(S) inferences each plus one for p of their prefixes, and a
+        group of an update is drawn from them, uniformly, with probability corpus_probability
+        (`training.plan_groups`). Both are 0, or both positive.
+    loss_function: how a residual d of subtrajectory balance is penalized (`subtb.penalty`):
+        "square", d^2, the paper's; "linex", the zero-avoiding Linex(loss_shape),
+        2 (exp(-a d) + a d - 1) / a^2, which weighs a residual where the policy underweights a
+        segment (d < 0) more than one where it overweights it."""
 
     budgets: tuple[int, ...] = (2**20, 2**21, 2**22)
     update_caps: tuple[int, ...] = (8, 16, 32, 64, 128, 256)
@@ -51,6 +66,10 @@ class Settings:
     checkpoint_budget_counts: tuple[int, ...] = (2**10, 2**12, 2**14, 2**16, 2**18, 2**20)
     generation_batch_size: int = 500
     forward_batch_size: int = 20
+    corpus_budget_fraction: float = 0.0
+    corpus_probability: float = 0.0
+    loss_function: str = "square"
+    loss_shape: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.budgets and not self.update_caps:
@@ -95,6 +114,20 @@ class Settings:
             raise ValueError("checkpoint_updates holds at least one update, and none below 1")
         if list(self.checkpoint_budget_counts) != sorted(set(self.checkpoint_budget_counts)):
             raise ValueError("checkpoint_budget_counts must increase")
+        if not (0 <= self.corpus_budget_fraction < 1 and 0 <= self.corpus_probability <= 1):
+            raise ValueError(
+                "corpus_budget_fraction lies in [0, 1) and corpus_probability in [0, 1]"
+            )
+        if (self.corpus_budget_fraction > 0) != (self.corpus_probability > 0):
+            raise ValueError(
+                "corpus_budget_fraction and corpus_probability are both 0 or both positive"
+            )
+        if self.loss_function not in LOSS_FUNCTIONS:
+            raise ValueError(
+                f"loss_function is one of {LOSS_FUNCTIONS}, got {self.loss_function!r}"
+            )
+        if self.loss_shape <= 0:
+            raise ValueError("loss_shape is positive")
         if self.generation_batch_size < self.responses_per_group:
             raise ValueError("generation_batch_size must hold one group of responses")
 

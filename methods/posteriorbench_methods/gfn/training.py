@@ -26,6 +26,7 @@ from posteriorbench import rules
 
 from posteriorbench_methods.common import (
     charges,
+    data_source,
     hf_runtime,
     run_context,
     run_record,
@@ -45,23 +46,33 @@ METHOD = gfn_policy.METHOD
 class GroupPlan:
     """What one group of an update trains on. `seed` seeds `rng` and, for a fresh group, the
     generator that draws its responses; `temperature` is None for a replayed group, which draws
-    its responses from the buffer with `rng`."""
+    its responses from the buffer with `rng`, and for a `corpus` group, which draws them from the
+    corpus hits that training bought."""
 
     index: int
     seed: int
     temperature: float | None
     rng: np.random.Generator
+    corpus: bool = False
 
     @property
     def replay(self) -> bool:
-        return self.temperature is None
+        return self.temperature is None and not self.corpus
 
 
 def plan_groups(
-    seeds_of_groups: Sequence[int], *, buffer_is_empty: bool, settings: gfn_settings.Settings
+    seeds_of_groups: Sequence[int],
+    *,
+    buffer_is_empty: bool,
+    settings: gfn_settings.Settings,
+    corpus_available: bool = False,
 ) -> list[GroupPlan]:
     """Decide for each group of an update, in order, whether it is replayed or fresh, and the
     temperature of a fresh group.
+
+    With `corpus_available` and a positive `corpus_probability`, a group is first drawn from the
+    corpus hits with that probability; only then is the rest decided as below. Without them the
+    group's generator is used exactly as in the paper's runs.
 
     A group is replayed with probability `replay_probability` if the buffer holds a response
     when its turn comes. The buffer does after the first fresh group of the update, because the
@@ -71,6 +82,13 @@ def plan_groups(
     plans: list[GroupPlan] = []
     for index, seed in enumerate(seeds_of_groups):
         rng = np.random.default_rng(seed)
+        if (
+            corpus_available
+            and settings.corpus_probability > 0
+            and rng.random() < settings.corpus_probability
+        ):
+            plans.append(GroupPlan(index, seed, None, rng, corpus=True))
+            continue
         temperature = None
         if buffer_is_empty or rng.random() >= settings.replay_probability:
             temperature = 1.0
@@ -101,6 +119,7 @@ class Training:
     checkpoints: list[training_run.Checkpoint]
     update: int = 0
     budget_counts_reached: int = 0
+    corpus_pool: list[reward.Response] = dataclasses.field(default_factory=list)
 
     def run(self, request: training_run.Request) -> training_run.Done:
         """Train until the training run ends or `request` needs no more of it."""
@@ -163,6 +182,7 @@ class Training:
             ],
             buffer_is_empty=len(self.buffer) == 0,
             settings=settings,
+            corpus_available=bool(self.corpus_pool),
         )
         # The fresh groups are drawn first, together, so that several share a forward pass.
         fresh_groups = [
@@ -177,7 +197,15 @@ class Training:
             draws = None if plan.replay else next(fresh_draws)
             loss, responses, logq = self.train_group(plan, draws)
             losses.append(loss)
-            rows.extend(_training_rows(plan, responses, logq, first=len(rows)))
+            rows.extend(
+                _training_rows(
+                    plan,
+                    responses,
+                    logq,
+                    first=len(rows),
+                    mark_corpus=settings.corpus_probability > 0,
+                )
+            )
         parameters = [p for p in policy.model.parameters() if p.requires_grad]
         # The norm is only measured: nothing is clipped.
         gradient_norm = torch.nn.utils.clip_grad_norm_(parameters, math.inf)
@@ -193,6 +221,7 @@ class Training:
             loss=float(np.mean(losses)),
             gradient_norm=float(gradient_norm),
             fresh_groups=len(fresh_groups),
+            corpus_groups=sum(plan.corpus for plan in plans),
             buffer_size=len(self.buffer),
             budget_spent=self.ledger.budget,
             inferences=self.ledger.inferences,
@@ -205,6 +234,12 @@ class Training:
         responses of a fresh group, which are scored by the original model and by the policy and
         offered to the buffer; a replayed group, without draws, takes its responses from the
         buffer. Returns the group's loss, its responses, and log q of each under the policy."""
+        if plan.corpus:
+            chosen = plan.rng.choice(len(self.corpus_pool), self.settings.responses_per_group)
+            responses = [self.corpus_pool[int(index)] for index in chosen]
+            loss, logq = self.add_gradient(responses)
+            charges.apply(self.ledger, cost.corpus_responses(len(responses)))
+            return loss, responses, logq
         if draws is None:
             responses = self.buffer.sample(plan.rng, self.settings.responses_per_group)
             loss, logq = self.add_gradient(responses)
@@ -253,6 +288,8 @@ class Training:
                     response.prefix_hits,
                     epsilon=settings.epsilon,
                     terminated=response.token_ids[-1] in stops,
+                    loss_function=settings.loss_function,
+                    loss_shape=settings.loss_shape,
                 )
                 batch_sum = batch_sum + response_sum
                 counted += count
@@ -264,6 +301,40 @@ class Training:
             total += float(batch_sum.detach())
         assert counted == terms
         return total / max(terms, 1), logq
+
+    def buy_corpus_hits(self) -> None:
+        """Before the first update: buy the corpus hits of `corpus_budget_fraction`, at random
+        positions of the task's hit sequence, and score their prefixes by p. The corpus access
+        charges 1 / p̂(S) for each hit, and p of their prefixes one inference more."""
+        settings, context = self.settings, self.context
+        with data_source.reading(context.options.data):
+            access = context.bench.corpus(context.task, self.ledger)
+            per_hit = access.cost_of(1) + 1
+            spend = settings.corpus_budget_fraction * min(settings.training_budgets)
+            count = min(access.available, int(spend // per_hit))
+            positions: list[int] = []
+            if count > 0:
+                rng = np.random.default_rng(context.stream_seed(METHOD, "corpus-hits"))
+                positions = sorted(
+                    int(at) for at in rng.choice(access.available, count, replace=False)
+                )
+            hits = access.take(positions) if positions else []
+        if hits:
+            self.corpus_pool = reward.score(
+                self.p,
+                self.policy.stop_token_ids,
+                [list(hit.token_ids) for hit in hits],
+                decode=context.original.decode,
+                is_hit=self.is_hit,
+            )
+            charges.apply(self.ledger, cost.corpus_hit_scoring(len(hits)))
+        context.tracker.event(
+            "corpus_hits",
+            hits=len(hits),
+            labelled_hits=sum(response.hit for response in self.corpus_pool),
+            cost_per_hit=per_hit,
+            budget_spent=self.ledger.budget,
+        )
 
     def save_checkpoint_if_due(self) -> None:
         """After an update: save a checkpoint if the update is on the schedule, or if the budget
@@ -348,6 +419,7 @@ class Training:
             "update": self.update,
             "budget_counts_reached": self.budget_counts_reached,
             "buffer": [dataclasses.asdict(response) for response in self.buffer.responses()],
+            "corpus": [dataclasses.asdict(response) for response in self.corpus_pool],
             "checkpoints": [row.to_json() for row in self.checkpoints],
             "ledger": self.ledger.totals().to_dict(),
         }
@@ -370,17 +442,25 @@ class Training:
         self.buffer = _buffer(
             self.settings, self.policy, [reward.Response(**saved) for saved in loop["buffer"]]
         )
+        self.corpus_pool = [reward.Response(**saved) for saved in loop.get("corpus", [])]
         self.checkpoints = [training_run.Checkpoint.from_json(row) for row in loop["checkpoints"]]
         self.ledger = pb_ledger.Ledger.resume(pb_ledger.LedgerTotals.from_dict(loop["ledger"]))
 
 
 def _training_rows(
-    plan: GroupPlan, responses: Sequence[reward.Response], logq: Sequence[float], *, first: int
+    plan: GroupPlan,
+    responses: Sequence[reward.Response],
+    logq: Sequence[float],
+    *,
+    first: int,
+    mark_corpus: bool = False,
 ) -> list[dict[str, Any]]:
     """The rows of one group in the file of an update's training draws. `logq` is log q of each
-    response under the policy before the update's step."""
+    response under the policy before the update's step. With `mark_corpus` a row also says
+    whether it came from the corpus hits."""
     return [
-        {
+        ({"corpus": plan.corpus} if mark_corpus else {})
+        | {
             "draw_index": first + offset,
             "group": plan.index,
             "replayed": plan.replay,
@@ -424,6 +504,12 @@ def training_run_settings(
     without the budgets and update caps that a run asks for."""
     method = dataclasses.asdict(settings)
     del method["budgets"], method["update_caps"]
+    # The settings added after the paper are left out at their defaults, so that a training run
+    # of the paper's settings is recognized as one.
+    defaults = gfn_settings.Settings()
+    for name in gfn_settings.ADDED_SETTINGS:
+        if method[name] == getattr(defaults, name):
+            del method[name]
     return {"task_id": context.task.task_id, "replicate": context.replicate, **method}
 
 
@@ -471,6 +557,8 @@ def train(
     saved = training_run.load_resume(directory)
     if saved is not None:
         training.restore(saved)
+    elif settings.corpus_probability > 0:
+        training.buy_corpus_hits()
     done = training.run(needed)
     training_run.write_index(directory, training.checkpoints)
     training_run.write_done(directory, done)
