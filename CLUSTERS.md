@@ -51,6 +51,10 @@ ssh mila 'UV_CACHE_DIR=$SCRATCH/.cache/uv bash -l $SCRATCH/repos/PosteriorBench/
 ssh killarney 'bash -l $SCRATCH/repos/PosteriorBench/scripts/setup_cluster.sh'
 ```
 
+Jobs run `uv run --no-sync`: they use the environments that `cluv sync` (root project) and
+`setup_cluster.sh` (`methods/`) installed, and never write to them, so that the tasks of a job array can't
+re-install packages under each other. If you change the dependencies of `methods/`, run the setup again.
+
 `$SCRATCH` is purged on DRAC clusters (files unused for 60 days). If a job fails with
 `OfflineModeIsEnabled` or `LocalEntryNotFoundError`, the cache is gone: run the setup again.
 

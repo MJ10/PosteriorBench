@@ -25,9 +25,10 @@ mkdir -p "$PB_RUN_DIR"
 args=("$@")
 out=""
 for ((i = 0; i < ${#args[@]}; i++)); do
+    # cluv passes the command after `--` unexpanded: expand $SCRATCH and $HOME in --out here.
     case "${args[i]}" in
-        --out) out="${args[i + 1]}" ;;
-        --out=*) out="${args[i]#--out=}" ;;
+        --out) out="${args[i + 1]}" && out="${out//\$SCRATCH/$SCRATCH}" && out="${out//\$HOME/$HOME}" && args[i + 1]="$out" ;;
+        --out=*) out="${args[i]#--out=}" && out="${out//\$SCRATCH/$SCRATCH}" && out="${out//\$HOME/$HOME}" && args[i]="--out=$out" ;;
     esac
 done
 if [[ -z "$out" ]]; then
@@ -46,7 +47,8 @@ nvidia-smi -L 2>/dev/null || echo "No GPU visible"
 echo "Running: uv run ${args[*]} (in methods/)"
 
 status=0
-srun uv --directory=methods run "${args[@]}" || status=$?
+# --no-sync: scripts/setup_cluster.sh prepared methods/.venv (see scripts/job.sh).
+srun uv --directory=methods run --no-sync "${args[@]}" || status=$?
 
 if [[ -d "$out" ]]; then
     rsync -a --prune-empty-dirs \

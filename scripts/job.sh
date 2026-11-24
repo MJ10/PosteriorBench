@@ -26,4 +26,6 @@ echo "Job $SLURM_JOB_ID on $CLUV_CLUSTER ($(hostname)), commit ${GIT_COMMIT:0:8}
 nvidia-smi -L 2>/dev/null || echo "No GPU visible"
 echo "Running: uv run $*"
 
-srun uv run "$@"
+# --no-sync: cluv sync prepared the env on the login node. Array tasks running `uv run` at once
+# could otherwise re-sync the shared .venv while the others import from it.
+srun uv run --no-sync "$@"

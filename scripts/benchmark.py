@@ -68,9 +68,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--replicates", default="0,1,2", help="Comma-separated replicate indices.")
     parser.add_argument(
         "--out",
-        type=pathlib.Path,
         default=None,
-        help="Output root (default: $PB_RUN_DIR/benchmark in a cluv job, else runs/benchmark).",
+        help="Output root; may use $SCRATCH (default: $PB_RUN_DIR/benchmark in a cluv job, else "
+        "runs/benchmark). Pass an earlier job's folder to fill in what it did not finish.",
     )
     parser.add_argument(
         "--shard",
@@ -204,7 +204,9 @@ def run_worker(
 
 def main() -> None:
     args = parse_args()
-    out = args.out or pathlib.Path(os.environ.get("PB_RUN_DIR", "runs")) / "benchmark"
+    # --out may name $SCRATCH: cluv passes the command after `--` to the job unexpanded.
+    out = pathlib.Path(os.path.expandvars(args.out)) if args.out else None
+    out = out or pathlib.Path(os.environ.get("PB_RUN_DIR", "runs")) / "benchmark"
     bench = pb.Benchmark()
     if args.tasks in ("benchmark", "scored"):
         task_ids = [task.task_id for task in bench.tasks(args.tasks)]
