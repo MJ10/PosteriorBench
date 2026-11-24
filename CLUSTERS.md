@@ -132,7 +132,7 @@ sit idle. Prefer the other clusters for `methods/`.
 
 | Cluster | Account(s) | Notes |
 |---|---|---|
-| mila | (none) | compute nodes online; default `long` partition; project and uv cache on `$SCRATCH` |
+| mila | (none) | compute nodes online; default `long` partition; no V100s (the locked torch has no kernels for them); project on `$SCRATCH` |
 | rorqual, fir, nibi | `rrg-bengioy-ad`, `def-bengioy` | one job per account, the first to start is kept; fir and nibi compute nodes are online |
 | narval | `def-bengioy` | |
 | trillium-gpu | `rrg-bengioy-ad` | project on `$SCRATCH/repos/PosteriorBench` |

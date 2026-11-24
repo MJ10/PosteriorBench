@@ -160,6 +160,8 @@ gpus = "1"
 # torch's files under running jobs.
 project_dir = "$SCRATCH/repos/PosteriorBench"
 env = { UV_OFFLINE = "0", HF_HUB_OFFLINE = "0", WANDB_MODE = "online" }
+# The locked torch (2.11, CUDA 12.8) has no kernels for the V100s ("volta"): keep jobs off them.
+sbatch_args = { constraint = "turing|ampere|lovelace|hopper" }
 
 [tool.cluv.clusters.tamia]
 # https://docs.alliancecan.ca/wiki/TamIA
