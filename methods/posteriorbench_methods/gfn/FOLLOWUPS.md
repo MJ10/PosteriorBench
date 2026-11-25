@@ -64,7 +64,7 @@ Forward KL is the score where GFlowNet is furthest behind, so the ideas below ar
 - **Local Search GFlowNets.** Kim, Yun, Bengio, Zhang, Bengio, Ahn, Park. ICLR 2024, arXiv:2310.02710.
   - Backtrack half a trajectory and rebuild it with the policy, keeping the result if its reward is higher. The default is 7 iterations of 4 candidates.
   - Flow of Reasoning applies it to LMs as suffix regeneration; removing it cost 25 points there.
-  - **Here.** Each refinement pays a generation of the suffix and a p-scoring of the new response, so roughly 2 inferences per candidate, the same as a fresh response. It is a different way to spend the same budget, not a free gain. It could help the rare tasks by keeping the suffix of a near-hit.
+  - **Here.** Each refinement pays a generation of the suffix and a p-scoring of the new response, so roughly 2 inferences per candidate, the same as a fresh response. It is a different way to spend the same budget, not a free gain. It could help the rare tasks, where a run otherwise never finds a hit, by starting from a known one. **Implemented** as `local_search_probability`: one restart from a random prefix of a known hit, without the accept/reject step, since SubTB trains on every response whatever its reward.
 - **Temperature-conditional GFlowNets.** Kim, Ko, Yun, et al. *Learning to Scale Logits for Temperature-Conditional GFlowNets.* ICML 2024, arXiv:2310.02823. Conditions the policy on a reward temperature. Here the target temperature is fixed at 1 and the sampling temperature is already U[0.5, 2] for 2/3 of fresh groups.
 - **Thompson-sampling GFlowNets.** Rector-Brooks et al. ICML 2023 workshop, arXiv:2306.17693. Uses an ensemble of policy heads: about 15% more compute and 60% more modes on bit sequences.
 - **Adaptive teachers.** Kim et al. ICLR 2025, arXiv:2410.01432. Trains a second sampler that targets high-loss regions. Its generations are charged too, so it costs a second model's draws.
@@ -81,6 +81,7 @@ Both additions are settings, off by default. At their defaults the training run'
 | `corpus_probability` | 0 | a group is drawn uniformly from those hits with this probability; otherwise the group is replayed or fresh as before |
 | `loss_function` | `square` | `linex`: penalize each pairwise SubTB residual d with 2(e^{−a d} + a d − 1)/a² in place of d² |
 | `loss_shape` | 1.0 | a, for `linex` |
+| `local_search_probability` | 0 | once a hit is known (a bought corpus hit or a hit in the buffer), a group is a local-search group with this probability: it keeps the first k content tokens of one such hit, k uniform in [0, its content length), and draws the group's 20 responses as that prefix followed by the policy's continuation at temperature 1 |
 
 The costs follow the rules of `cost.py`, and everything is charged to the ledger:
 
@@ -89,7 +90,18 @@ The costs follow the rules of `cost.py`, and everything is charged to the ledger
 
 At f = 0.1 and B = 2^20, a task with p̂(S) = 0.0088 buys 912 hits for about 10% of the budget. A task with p̂(S) = 8 × 10^-4 buys 82 hits. The rarest task buys one.
 
+- **A local-search response:** charged as a whole fresh response, 2 inferences and 5 passes, although only its continuation is generated. It is offered to the buffer like a fresh response.
+
 The Linex loss costs nothing. The residuals between two stop tokens' flows have no direction and stay squared.
+
+## Fairness
+
+The added settings are held to the rules every method follows:
+
+- **Everything is charged.** Every inference goes through the run's ledger under the categories of `docs/cost_accounting.md`. Corpus hits are bought through the benchmark's own corpus access at 1/p̂(S) each, as SFT buys them.
+- **No evaluation data.** The corpus access leaves out the hits that equal a reference, as it does for every method. A setting reads nothing but the task table, which every method may see; p̂(S) is in it.
+- **Settings are chosen fairly.** The runs below are on benchmark tasks and are exploration. Settings for a claim about the benchmark are to be chosen on the paper's two tuning pairs (`wc_0346/goblin_mention`, `wc_1852/chinese_character`), as the paper's were. The 21 tasks are then run once at those settings.
+- **Costs are compared fairly.** Comparisons with other methods are at matched construction inferences. A corpus variant spends more inferences per budget pass than the baseline.
 
 ## Results
 

@@ -63,6 +63,7 @@ Settings added after the paper, off by default ([FOLLOWUPS.md](FOLLOWUPS.md) giv
 | `corpus_probability` | 0 | a group is drawn from those corpus hits with this probability (both settings are 0 or both positive); it costs what a replayed group costs |
 | `loss_function` | `square` | `linex`: each SubTB residual d is penalized by 2 (e^{-a d} + a d - 1) / a^2, zero-avoiding, instead of d^2 |
 | `loss_shape` | 1.0 | a of `linex` |
+| `local_search_probability` | 0 | once a hit is known (bought or in the buffer), a group is a local-search group with this probability: the policy continues a random strict prefix of one such hit; charged as fresh responses |
 
 What the settings do not say:
 
