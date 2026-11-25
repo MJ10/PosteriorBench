@@ -46,18 +46,20 @@ METHOD = gfn_policy.METHOD
 class GroupPlan:
     """What one group of an update trains on. `seed` seeds `rng` and, for a fresh group, the
     generator that draws its responses; `temperature` is None for a replayed group, which draws
-    its responses from the buffer with `rng`, and for a `corpus` group, which draws them from the
-    corpus hits that training bought."""
+    its responses from the buffer with `rng`, for a `corpus` group, which draws them from the
+    corpus hits that training bought, and for a `local` group, which continues a prefix of a
+    known hit (`Training.local_search_seeds`)."""
 
     index: int
     seed: int
     temperature: float | None
     rng: np.random.Generator
     corpus: bool = False
+    local: bool = False
 
     @property
     def replay(self) -> bool:
-        return self.temperature is None and not self.corpus
+        return self.temperature is None and not self.corpus and not self.local
 
 
 def plan_groups(
@@ -66,13 +68,16 @@ def plan_groups(
     buffer_is_empty: bool,
     settings: gfn_settings.Settings,
     corpus_available: bool = False,
+    seeds_available: bool = False,
 ) -> list[GroupPlan]:
     """Decide for each group of an update, in order, whether it is replayed or fresh, and the
     temperature of a fresh group.
 
     With `corpus_available` and a positive `corpus_probability`, a group is first drawn from the
     corpus hits with that probability; only then is the rest decided as below. Without them the
-    group's generator is used exactly as in the paper's runs.
+    group's generator is used exactly as in the paper's runs. Likewise, with `seeds_available`
+    and a positive `local_search_probability`, a group that is not a corpus group is next a
+    local-search group with that probability.
 
     A group is replayed with probability `replay_probability` if the buffer holds a response
     when its turn comes. The buffer does after the first fresh group of the update, because the
@@ -88,6 +93,13 @@ def plan_groups(
             and rng.random() < settings.corpus_probability
         ):
             plans.append(GroupPlan(index, seed, None, rng, corpus=True))
+            continue
+        if (
+            seeds_available
+            and settings.local_search_probability > 0
+            and rng.random() < settings.local_search_probability
+        ):
+            plans.append(GroupPlan(index, seed, None, rng, local=True))
             continue
         temperature = None
         if buffer_is_empty or rng.random() >= settings.replay_probability:
@@ -183,6 +195,8 @@ class Training:
             buffer_is_empty=len(self.buffer) == 0,
             settings=settings,
             corpus_available=bool(self.corpus_pool),
+            seeds_available=settings.local_search_probability > 0
+            and bool(self.local_search_seeds()),
         )
         # The fresh groups are drawn first, together, so that several share a forward pass.
         fresh_groups = [
@@ -204,6 +218,7 @@ class Training:
                     logq,
                     first=len(rows),
                     mark_corpus=settings.corpus_probability > 0,
+                    mark_local=settings.local_search_probability > 0,
                 )
             )
         parameters = [p for p in policy.model.parameters() if p.requires_grad]
@@ -222,6 +237,11 @@ class Training:
             gradient_norm=float(gradient_norm),
             fresh_groups=len(fresh_groups),
             corpus_groups=sum(plan.corpus for plan in plans),
+            **(
+                {"local_groups": sum(plan.local for plan in plans)}
+                if settings.local_search_probability > 0
+                else {}
+            ),
             buffer_size=len(self.buffer),
             budget_spent=self.ledger.budget,
             inferences=self.ledger.inferences,
@@ -240,6 +260,8 @@ class Training:
             loss, logq = self.add_gradient(responses)
             charges.apply(self.ledger, cost.corpus_responses(len(responses)))
             return loss, responses, logq
+        if plan.local:
+            return self.train_local_group(plan)
         if draws is None:
             responses = self.buffer.sample(plan.rng, self.settings.responses_per_group)
             loss, logq = self.add_gradient(responses)
@@ -249,6 +271,41 @@ class Training:
             self.p,
             self.policy.stop_token_ids,
             [draw.token_ids for draw in draws],
+            decode=self.context.original.decode,
+            is_hit=self.is_hit,
+        )
+        logq = self.policy.logq([response.token_ids for response in responses])
+        charges.apply(self.ledger, cost.fresh_responses(len(responses)))
+        for response in responses:
+            self.buffer.add(response)
+        loss, _ = self.add_gradient(responses)
+        return loss, responses, logq
+
+    def local_search_seeds(self) -> list[reward.Response]:
+        """The hits a local-search group may start from: the corpus hits that training bought,
+        then the hits in the buffer."""
+        return [*self.corpus_pool, *(r for r in self.buffer.responses() if r.hit)]
+
+    def train_local_group(
+        self, plan: GroupPlan
+    ) -> tuple[float, list[reward.Response], list[float]]:
+        """A local-search group: one known hit, cut after k of its content tokens (k uniform in
+        [0, its content length)), and the group's responses as that prefix followed by the
+        policy's continuation at temperature 1. They are scored, charged and offered to the
+        buffer as fresh responses, each charged as a whole generation."""
+        seeds = self.local_search_seeds()
+        start = seeds[int(plan.rng.integers(len(seeds)))]
+        stops = self.policy.stop_token_ids
+        content = start.token_ids[:-1] if start.token_ids[-1] in stops else start.token_ids
+        limit = min(len(content), self.policy.generation.response_format.max_tokens - 1)
+        prefix = list(content[: int(plan.rng.integers(limit))]) if limit > 0 else []
+        draws = self.policy.draw_after(
+            prefix, hf_runtime.DrawGroup(self.settings.responses_per_group, plan.seed)
+        )
+        responses = reward.score(
+            self.p,
+            stops,
+            [prefix + list(draw.token_ids) for draw in draws],
             decode=self.context.original.decode,
             is_hit=self.is_hit,
         )
@@ -454,12 +511,15 @@ def _training_rows(
     *,
     first: int,
     mark_corpus: bool = False,
+    mark_local: bool = False,
 ) -> list[dict[str, Any]]:
     """The rows of one group in the file of an update's training draws. `logq` is log q of each
     response under the policy before the update's step. With `mark_corpus` a row also says
-    whether it came from the corpus hits."""
+    whether it came from the corpus hits, and with `mark_local` whether from a local-search
+    group."""
     return [
         ({"corpus": plan.corpus} if mark_corpus else {})
+        | ({"local": plan.local} if mark_local else {})
         | {
             "draw_index": first + offset,
             "group": plan.index,

@@ -1,5 +1,5 @@
-"""Tests of the GFlowNet settings added beyond the paper (gfn/FOLLOWUPS.md): corpus-hit replay
-and the Linex loss. Each is off by default, and at its default the method is the paper's."""
+"""Tests of the GFlowNet settings added beyond the paper (gfn/FOLLOWUPS.md): corpus-hit replay,
+the Linex loss and local search. Each is off by default, and at its default the method is the paper's."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ def test_added_settings_default_off() -> None:
     settings = Settings()
     assert settings.corpus_budget_fraction == 0 and settings.corpus_probability == 0
     assert settings.loss_function == "square"
+    assert settings.local_search_probability == 0
     assert set(gfn_settings.ADDED_SETTINGS) <= {f.name for f in dataclasses.fields(Settings)}
 
 
@@ -39,6 +40,8 @@ def test_added_settings_default_off() -> None:
         {"corpus_budget_fraction": 0.1, "corpus_probability": 1.5},
         {"loss_function": "cube"},
         {"loss_shape": 0.0},
+        {"local_search_probability": 1.5},
+        {"local_search_probability": -0.1},
     ],
 )
 def test_invalid_added_settings(changes: dict[str, Any]) -> None:
@@ -55,7 +58,12 @@ def test_training_run_settings_leave_out_defaults() -> None:
         Settings(corpus_budget_fraction=0.1, corpus_probability=0.2, loss_function="linex"),
     )
     assert changed["corpus_probability"] == 0.2 and changed["loss_function"] == "linex"
-    assert "loss_shape" not in changed
+    assert "loss_shape" not in changed and "local_search_probability" not in changed
+    local = training.training_run_settings(
+        context,  # type: ignore[arg-type]
+        Settings(local_search_probability=0.2),
+    )
+    assert local["local_search_probability"] == 0.2
 
 
 # Group plans
@@ -97,6 +105,47 @@ def test_plan_groups_draw_corpus_groups() -> None:
         _seeds(50), buffer_is_empty=True, settings=settings, corpus_available=True
     )
     assert any(p.corpus for p in first)
+
+
+def test_plan_groups_unchanged_without_local_search() -> None:
+    """Without seeds, or with the probability at 0, local search leaves the plans as they were."""
+    corpus = Settings(corpus_budget_fraction=0.1, corpus_probability=0.3)
+    for settings in [Settings(), corpus]:
+        before = training.plan_groups(
+            _seeds(300), buffer_is_empty=False, settings=settings, corpus_available=True
+        )
+        for changed, seeds in [(settings, True), (_with_local(settings, 0.5), False)]:
+            plans = training.plan_groups(
+                _seeds(300),
+                buffer_is_empty=False,
+                settings=changed,
+                corpus_available=True,
+                seeds_available=seeds,
+            )
+            assert [(p.temperature, p.replay, p.corpus, p.local) for p in plans] == [
+                (p.temperature, p.replay, p.corpus, p.local) for p in before
+            ]
+
+
+def _with_local(settings: Settings, probability: float) -> Settings:
+    return dataclasses.replace(settings, local_search_probability=probability)
+
+
+def test_plan_groups_draw_local_groups() -> None:
+    settings = Settings(
+        corpus_budget_fraction=0.1, corpus_probability=0.2, local_search_probability=0.5
+    )
+    plans = training.plan_groups(
+        _seeds(4000),
+        buffer_is_empty=False,
+        settings=settings,
+        corpus_available=True,
+        seeds_available=True,
+    )
+    local = [p for p in plans if p.local]
+    assert all(p.temperature is None and not p.replay and not p.corpus for p in local)
+    assert abs(len(local) / len(plans) - 0.8 * 0.5) < 0.03
+    assert abs(sum(p.corpus for p in plans) / len(plans) - 0.2) < 0.03
 
 
 # The loss
@@ -353,3 +402,88 @@ def test_train_update_draws_only_fresh_groups(
         assert (draws is None) == (plan.temperature is None)
     update = [values for name, values in events if name == "update"][0]
     assert update["corpus_groups"] == sum(plan.corpus for plan, _ in seen)
+
+
+# Local search
+
+
+class _FakeBuffer:
+    def __init__(self, held: list[reward.Response]) -> None:
+        self.held, self.added = list(held), []
+
+    def responses(self) -> list[reward.Response]:
+        return list(self.held)
+
+    def add(self, response: reward.Response) -> None:
+        self.added.append(response)
+
+
+def test_local_search_seeds_are_corpus_then_buffer_hits() -> None:
+    run, _, _ = _training(Settings(local_search_probability=0.5), available=1, probability=0.5)
+    run.corpus_pool = [_response([1, 2, 7])]
+    run.buffer = _FakeBuffer([_response([3, 7], hit=False), _response([4, 5, 7])])
+    assert [r.token_ids for r in run.local_search_seeds()] == [[1, 2, 7], [4, 5, 7]]
+
+
+def test_local_group_continues_a_hit_prefix_and_pays_as_fresh(
+    monkeypatch: pytest.MonkeyPatch, fake_score: None
+) -> None:
+    settings = Settings(local_search_probability=0.5)
+    run, _, _ = _training(settings, available=1, probability=0.5)
+    start = _response([11, 12, 13, 14, 7])
+    run.buffer = _FakeBuffer([start])
+    asked: list[tuple[list[int], Any]] = []
+
+    def draw_after(prefix: list[int], group: Any) -> list[Any]:
+        asked.append((list(prefix), group))
+        return [types.SimpleNamespace(token_ids=[99, 7]) for _ in range(group.count)]
+
+    run.policy = types.SimpleNamespace(
+        stop_token_ids=(7, 8),
+        generation=types.SimpleNamespace(response_format=types.SimpleNamespace(max_tokens=10)),
+        draw_after=draw_after,
+        logq=lambda responses: [-2.0] * len(responses),
+    )
+    monkeypatch.setattr(run, "add_gradient", lambda responses: (0.25, [-2.0] * len(responses)))
+    prefixes = set()
+    for seed in range(40):
+        plan = training.GroupPlan(0, seed, None, np.random.default_rng(seed), local=True)
+        loss, responses, logq = run.train_group(plan, None)
+        prefix, group = asked[-1]
+        prefixes.add(tuple(prefix))
+        assert loss == 0.25 and len(responses) == settings.responses_per_group == len(logq)
+        assert group.count == settings.responses_per_group and group.temperature == 1.0
+        assert prefix == [11, 12, 13, 14][: len(prefix)] and len(prefix) < 4  # a strict prefix
+        assert all(r.token_ids == [*prefix, 99, 7] for r in responses)
+    assert prefixes == {(), (11,), (11, 12), (11, 12, 13)}
+    count = 40 * settings.responses_per_group
+    fresh = cost.fresh_responses(count)
+    assert run.ledger.inferences == sum(s.inferences for s in fresh)
+    assert run.ledger.budget == sum(s.budget for s in fresh)
+    assert len(run.buffer.added) == count
+
+
+def test_draw_after_extends_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from posteriorbench_methods.common import hf_runtime
+    from posteriorbench_methods.gfn import policy as gfn_policy
+
+    seen: list[Any] = []
+
+    def sample_groups(models: Any, groups: Any, generation: Any) -> list[list[str]]:
+        seen.append((models.q.prompt_ids, generation.response_format.max_tokens, groups))
+        return [["draw"]]
+
+    monkeypatch.setattr(gfn_policy.hf_runtime, "sample_groups", sample_groups)
+    model = types.SimpleNamespace(eval=lambda: None)
+    fmt = hf_runtime.ResponseFormat((7,), 10)
+    policy = gfn_policy.Policy(
+        model,
+        hf_runtime.CausalLM(model, (1, 2)),
+        hf_runtime.Generation(fmt, batch_size=500, renormalize=False),
+        20,
+    )
+    group = hf_runtime.DrawGroup(3, 5)
+    assert policy.draw_after([4, 5, 6], group) == ["draw"]
+    assert seen == [((1, 2, 4, 5, 6), 7, [group])]
+    with pytest.raises(ValueError):
+        policy.draw_after(list(range(10)), group)

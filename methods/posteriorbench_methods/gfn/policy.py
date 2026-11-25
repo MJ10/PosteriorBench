@@ -100,6 +100,22 @@ class Policy:
         self.model.eval()
         return hf_runtime.sample_groups(hf_runtime.TwoModels(self.lm), groups, self.generation)
 
+    def draw_after(
+        self, prefix: Sequence[int], group: hf_runtime.DrawGroup
+    ) -> list[hf_runtime.Draw]:
+        """The responses of one group that continue `prefix`, a start of a response: each draw
+        holds the continuation alone, of at most the tokens that `prefix` leaves."""
+        fmt = self.generation.response_format
+        if len(prefix) >= fmt.max_tokens:
+            raise ValueError("the prefix leaves no token to draw")
+        lm = dataclasses.replace(self.lm, prompt_ids=(*self.lm.prompt_ids, *map(int, prefix)))
+        generation = dataclasses.replace(
+            self.generation,
+            response_format=dataclasses.replace(fmt, max_tokens=fmt.max_tokens - len(prefix)),
+        )
+        self.model.eval()
+        return hf_runtime.sample_groups(hf_runtime.TwoModels(lm), [group], generation)[0]
+
     def parts(self, count: int, seed: int) -> list[hf_runtime.DrawGroup]:
         """`count` draws at temperature 1 as groups of PART_SIZE; the part that starts at draw
         `lo` has the seed `seed` + `lo`."""

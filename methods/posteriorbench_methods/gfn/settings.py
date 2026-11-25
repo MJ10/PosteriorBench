@@ -6,7 +6,13 @@ import dataclasses
 
 LOSS_FUNCTIONS = ("square", "linex")
 # Settings beyond the paper's; their defaults reproduce the paper's runs.
-ADDED_SETTINGS = ("corpus_budget_fraction", "corpus_probability", "loss_function", "loss_shape")
+ADDED_SETTINGS = (
+    "corpus_budget_fraction",
+    "corpus_probability",
+    "loss_function",
+    "loss_shape",
+    "local_search_probability",
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -42,7 +48,13 @@ class Settings:
     loss_function: how a residual d of subtrajectory balance is penalized (`subtb.penalty`):
         "square", d^2, the paper's; "linex", the zero-avoiding Linex(loss_shape),
         2 (exp(-a d) + a d - 1) / a^2, which weighs a residual where the policy underweights a
-        segment (d < 0) more than one where it overweights it."""
+        segment (d < 0) more than one where it overweights it.
+    local_search_probability: a group is a local-search group with this probability, once a hit
+        is known (a bought corpus hit or a hit in the buffer): it takes one such hit, keeps its
+        first k content tokens for k uniform in [0, its content length), and draws the group's
+        responses as that prefix followed by the policy's continuation at temperature 1, after
+        Local Search GFlowNets (Kim et al., ICLR 2024). The responses are scored, charged and
+        offered to the buffer as fresh responses, each charged as a whole generation."""
 
     budgets: tuple[int, ...] = (2**20, 2**21, 2**22)
     update_caps: tuple[int, ...] = (8, 16, 32, 64, 128, 256)
@@ -70,6 +82,7 @@ class Settings:
     corpus_probability: float = 0.0
     loss_function: str = "square"
     loss_shape: float = 1.0
+    local_search_probability: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.budgets and not self.update_caps:
@@ -128,6 +141,8 @@ class Settings:
             )
         if self.loss_shape <= 0:
             raise ValueError("loss_shape is positive")
+        if not 0 <= self.local_search_probability <= 1:
+            raise ValueError("local_search_probability lies in [0, 1]")
         if self.generation_batch_size < self.responses_per_group:
             raise ValueError("generation_batch_size must hold one group of responses")
 
