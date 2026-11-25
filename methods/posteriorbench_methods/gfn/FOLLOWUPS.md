@@ -201,7 +201,7 @@ For comparison, the best of the paper's other methods on the same tasks and repl
 
 - **Ten percent is not enough.** At f = 0.1 the run buys one hit. The sampler then never produces a hit on its own, and the result is the fallback as before.
 - **Thirty percent clears the fallback on two of the three tasks.** With 3–5 bought hits, `wc_0842` and `wc_1301` go from 50 to a forward KL of about 6–8. That is better than every method in the paper on those tasks at up to 914k inferences, and better than the paper's GFlowNet at four times the budget.
-- **`wc_1802` still fails.** Four bought hits gave 2 hits in 1,024 evaluation draws. The bought hits alone do not teach the sampler this task. Local search (below) is the planned next try.
+- **`wc_1802` still fails.** Four bought hits gave 2 hits in 1,024 evaluation draws. The bought hits alone do not teach the sampler this task with the plain loss. With Linex added, they do (next section).
 - **Cost.** These runs spend about 600k construction inferences against about 432k for the baseline, and about 40% more than `mixture-eb16+composition` K = 16384. The fair comparisons are with methods at 600k–900k, as in the table.
 - **What it means for the benchmark, roughly.** With composition, the rare-task mean would be (7.91 + 6.33 + 50) / 3 = 21.4 in forward KL and (7.54 + 3.62 + 79.05) / 3 = 30.1 in reverse KL, against 50 and 112 now. That is under the about 24 / 36 that GFlowNet would need to have the best mean in the paper. This is a projection from one replicate, not a measurement; see the caveats.
 
@@ -211,12 +211,65 @@ For comparison, the best of the paper's other methods on the same tasks and repl
 - **One replicate.** With 1–5 bought hits, which hits are bought is luck, and replicates 1 and 2 may differ a lot.
 - **Non-rare tasks at f = 0.3 are untested.** The common-task results above are at f = 0.1.
 
-**Further runs (batch 2, running at the time of writing):** f = 0.3 with `corpus_probability=0.5`, and f = 0.3 with Linex, on each rare task, plus corpus f = 0.1 with Linex on `wc_0670` and `wc_1853`.
+### Corpus replay with Linex, and a higher replay probability
+
+Eight more runs were made on rorqual at B = 2^20, replicate 0, from commit `1824091` or later. The code paths the runs use did not change between those commits. Two arms were run on each rare task at f = 0.3: `corpus_probability=0.5`, and `corpus_probability=0.25` with `loss_function=linex` (a = 0.25). On the two common tasks, f = 0.1 was combined with Linex.
+
+Rare tasks, forward / reverse KL. Each run bought the same hits as its f = 0.3 run above, since the seeds are the same:
+
+| Task | Corpus f = 0.3, p = 0.25 | p = 0.5 | **p = 0.25 + Linex** | Linex native hit rate | Linex construction inferences |
+|---|---|---|---|---|---|
+| `wc_0842` sampler | 7.91 / 7.54 | 8.16 / 7.18 | **7.68 / 7.19** | 0.237 | 603,200 |
+| `wc_0842` composition | 7.91 / 7.54 | 8.16 / 7.18 | **7.68 / 7.19** | | 603,868 |
+| `wc_1301` sampler | 7.94 / 4.22 | 7.81 / 4.21 | **5.44 / 4.16** | 0.396 | 611,613 |
+| `wc_1301` composition | 6.33 / 3.62 | 7.81 / 4.21 | 7.87 / 3.71 | | 612,461 |
+| `wc_1802` sampler | 50 / 79.05 (fallback) | 50 / 79.05 (fallback) | **6.06 / 5.45** | 0.743 | 599,696 |
+| `wc_1802` composition | 50 / 79.05 (fallback) | 50 / 79.05 (fallback) | **7.40 / 3.68** | | 600,961 |
+
+Common tasks, forward / reverse KL:
+
+| Task | Corpus f = 0.1 | **Corpus f = 0.1 + Linex** | Linex native hit rate |
+|---|---|---|---|
+| `wc_0670` sampler | 2.84 / 2.04 | 2.53 / 2.78 | 0.209 |
+| `wc_0670` composition | 1.58 / 1.50 | 1.81 / 2.01 | |
+| `wc_1853` sampler | 3.70 / 2.72 | 3.66 / 2.79 | 0.923 |
+| `wc_1853` composition | 1.16 / 1.11 | **0.93 / 1.10** | |
+
+**Verdict.**
+
+- **Corpus replay with Linex clears the fallback on all three rare tasks.**
+  - On `wc_1802`, the task that failed with the plain loss, it gives a forward KL of 6.06 and a hit rate of 0.74 from the same four bought hits.
+  - The zero-avoiding loss seems to be what lets the sampler spread out from a handful of hits, rather than collapse onto them or lose them.
+  - A higher replay probability (p = 0.5) does not do this.
+- **The three rare tasks with composition** average (7.68 + 7.87 + 7.40) / 3 = 7.65 in forward KL and (7.19 + 3.71 + 3.68) / 3 = 4.86 in reverse KL. The paper's GFlowNet has 50 and 112 on them.
+  - The sampler alone averages 6.39 / 5.60.
+  - With composition, it beats every method in the paper at up to 914k inferences on each rare task and both KLs. The one exception is forward KL on `wc_1301`, where `sft+composition` B = 2^20 has 7.74 against 7.87.
+- **On the common tasks, Linex on top of corpus replay is mixed.**
+  - On `wc_0670` it lowers the sampler's forward KL a little, but worsens reverse KL and the composition scores. As in the Linex-only run, the hit rate falls (0.21).
+  - On `wc_1853` it improves composition a little.
+- **A rough benchmark projection.**
+  - Take the paper's `gfn+composition` scores on the 18 other tasks (5.22 / 4.92 at 432k) and add these three: the 21-task mean would be about (18 × 5.22 + 3 × 7.65) / 21 = 5.57 in forward KL and 4.91 in reverse KL.
+  - At B = 2^20, the best paper methods are `mixture-eb16+composition` K = 16384 at 7.87 / 9.39 and `sft+composition` B = 2^19 at 8.48 / 12.22.
+  - At four times the budget, `sft+composition` B = 2^21 has 5.91 / 7.34.
+  - This is a projection, not a measurement; the caveats below are serious.
+
+**Caveats, which apply with more force now.**
+
+- **Arms were added after seeing results, on the test tasks.** Each rare task has now had four arms: f = 0.1, f = 0.3, f = 0.3 with p = 0.5, and f = 0.3 with Linex. f = 0.3 and the corpus+Linex combination were both chosen after an earlier arm failed. The best of four arms on one replicate is biased downward. The combination itself was planned before batch 1 finished (FOLLOWUPS next steps), and a = 0.25 was fixed before any run. Still, these numbers are exploration, not a claim.
+- **The 18 other tasks were not run with these settings.** On `wc_0670`, Linex hurts some scores. Nothing is known about f = 0.3 on common tasks, where it spends far more inferences.
+- **One replicate.** The 3–5 bought hits are a lucky or unlucky draw. Replicates 1 and 2 buy different hits.
+- **Cost.** The rare-task runs spend about 600k construction inferences against the baseline's 432k.
+
+**What a fair claim needs.**
+
+1. Fix a rule in advance. For example, set f per task from p̂(S) to buy a fixed number of hits, with a floor such as f = 0.1, and use corpus replay with Linex(0.25) everywhere.
+2. Check the rule on the tuning pairs only.
+3. Run all 21 tasks × 3 replicates once with it, and compare at matched construction inferences.
 
 **Local search.** The `local_search_probability` setting was smoke-tested on `wc_1301` (f = 0.3, local 0.25, 8 updates). 580 of its 920 local-search responses were hits (63%), against 0 of 1,680 fresh responses. A few bought hits become many new and different hits to train on. No full run has been made.
 
 **Next steps** (none launched; each needs approval):
 
-- Local search on the three rare tasks at f = 0.1 and 0.3: 6 runs, about 18 GPU-hours.
-- A rule for f from p̂(S), fixed on the tuning pairs, then a sweep of f and a there.
-- A full 21 × 3 run at B = 2^20 with the fixed rule: about 63 runs × 5 GPU-hours ≈ 300 GPU-hours per variant.
+- A rule for f from p̂(S), with corpus replay and Linex, fixed on the tuning pairs (`wc_0346`, `wc_1852`): a few runs, about 10–20 GPU-hours.
+- A full 21 × 3 run at B = 2^20 with the fixed rule: about 63 runs × 5 GPU-hours ≈ 300 GPU-hours. This is the run that would support a claim.
+- Local search on the rare tasks at f = 0.1, to test whether it removes the need for a large f: 3 runs, about 9 GPU-hours. It is less urgent now that corpus replay with Linex clears all three tasks at f = 0.3.
