@@ -276,3 +276,39 @@ Common tasks, forward / reverse KL:
 - A rule for f from p̂(S), with corpus replay and Linex, fixed on the tuning pairs (`wc_0346`, `wc_1852`): a few runs, about 10–20 GPU-hours.
 - A full 21 × 3 run at B = 2^20 with the fixed rule: about 63 runs × 5 GPU-hours ≈ 300 GPU-hours. This is the run that would support a claim.
 - Local search on the rare tasks at f = 0.1, to test whether it removes the need for a large f: 3 runs, about 9 GPU-hours. It is less urgent now that corpus replay with Linex clears all three tasks at f = 0.3.
+
+## VarGrad trajectory balance in place of SubTB
+
+The `objective=vargrad` setting replaces SubTB with VarGrad trajectory balance (`vargrad.py`): one residual per response against the group's mean log R − log q, with no prefix flows. It costs the same. Seven runs were made on Mila (one A100-80GB each) from commit `0bad7cd`, at B = 2^20, replicate 0:
+
+- **Tuning pairs:** the baseline (SubTB, no added settings) and `--set objective=vargrad`, on `wc_0346/goblin_mention` and `wc_1852/chinese_character`. These are the pairs settings may be chosen on.
+- **Rare tasks:** VarGrad with the settings of the best SubTB arm above (`corpus_budget_fraction=0.3`, `corpus_probability=0.25`, Linex a = 0.25). Each run bought the same hits as its SubTB counterpart.
+
+Tuning pairs, forward / reverse KL, with the native hit rate. Construction inferences were 431k–433k in every run:
+
+| Task | SubTB sampler | VarGrad sampler | SubTB composition | VarGrad composition |
+|---|---|---|---|---|
+| `wc_0346` | **5.06 / 2.65**, 0.755 | 5.94 / 2.96, 0.948 | 5.86 / 2.96 | **3.19 / 2.36** |
+| `wc_1852` | **5.62 / 2.91**, 0.743 | 7.50 / 2.77, 0.979 | **3.80 / 2.81** | 5.52 / 3.10 |
+
+Rare tasks, forward / reverse KL, against SubTB with the same settings (previous section):
+
+| Task | SubTB sampler | VarGrad sampler | SubTB composition | VarGrad composition | VarGrad construction inferences |
+|---|---|---|---|---|---|
+| `wc_0842` | **7.68 / 7.19** | 8.59 / 7.82, 0.232 | **7.68 / 7.19** | 8.72 / 8.14 | 603,094 |
+| `wc_1301` | **5.44 / 4.16** | 23.30 / 20.80, 0.200 | **7.87 / 3.71** | 12.22 / 14.33 | 611,519 |
+| `wc_1802` | **6.06 / 5.45** | 50 / 79.05 (fallback), 0.013 | **7.40 / 3.68** | 50 / 79.05 (fallback) | 601,152 |
+
+**Verdict: VarGrad is simpler but not better here. SubTB stays the default.**
+
+- **On the tuning pairs, VarGrad sharpens the sampler.**
+  - Its hit rate rises to 0.95–0.98, but its forward KL is worse (5.94 vs 5.06, and 7.50 vs 5.62). It puts more mass on hits, but on fewer of them.
+  - Composition splits: VarGrad is much better on `wc_0346` (3.19 vs 5.86) and worse on `wc_1852` (5.52 vs 3.80).
+  - During training, VarGrad's selection hits (about 110–125 of 128) were steadier than SubTB's (about 85–95).
+- **On the rare tasks, VarGrad is worse everywhere and falls back on `wc_1802`.**
+  - `wc_0842` and `wc_1301` peaked at 31 and 58 selection hits (of 128) around update 224, then fell to 0 from about update 320. The submission rule picked the earlier checkpoints, so the runs did not fall back.
+  - `wc_1802` never had a selection hit.
+- **A likely reason, not tested.** With all-miss groups, every log R is log p + log ε, so log R − log q is nearly constant when q ≈ p. The group-mean baseline then gives almost no signal: the smoke run's loss at update 1 was about 5 × 10^-10. SubTB's per-prefix terms and learned prefix flows give signal in such groups. On the rare tasks, nearly all fresh groups are all-miss, and the signal comes from a few repeated bought hits. With a group-local log Ẑ, that signal seems to sharpen q onto those hits and then lose them.
+- **Fairness.** Charges are identical to SubTB, and so are the construction inferences. The tuning-pair comparison is the one settings may be chosen on. On those pairs, VarGrad does not win on the sampler's KLs, so choosing it would not be justified.
+
+**Caveats.** One replicate. The rare-task arm reuses settings chosen for SubTB, so a VarGrad-specific setting (for example a learned log Z, or a lower `loss_shape`) might do better. Such a setting would have to be chosen on the tuning pairs.
