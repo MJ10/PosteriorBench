@@ -93,6 +93,72 @@ The Linex loss costs nothing. The residuals between two stop tokens' flows have 
 
 ## Results
 
-The runs below were made on rorqual (H100). Each variant was run against a baseline at the same commit, task, replicate (0) and seeds, at B = 2^20 (`--set budgets=1048576 --set update_caps=`). Each cell gives `gflownet` at B = 2^20; the paper's value for the same task and replicate is in parentheses.
+Six runs were made on Mila (one A100-80GB each) from commit `1824091`, at B = 2^20 (`--set budgets=1048576 --set update_caps=`), replicate 0, with the same seeds:
 
-*(filled in when the runs finish)*
+- **Baseline:** no added settings.
+- **Corpus:** `--set corpus_budget_fraction=0.1 --set corpus_probability=0.25`. This bought 912 hits on `wc_0670` and 82 on `wc_1853`, about 1.04 × 10^5 inferences each.
+- **Linex:** `--set loss_function=linex --set loss_shape=0.25`.
+
+Each run took about 4.5–5 h of wall-clock time. Two runs on the `long` partition were preempted and resumed from their checkpoints.
+
+### `gflownet` (the sampler)
+
+The paper's value for the same task and replicate is in parentheses. Lower is better for both KLs.
+
+| Task | Run | Capped forward KL | Reverse KL | Native hit rate | Construction inferences |
+|---|---|---|---|---|---|
+| `wc_0670/chinese_character` | baseline | 10.76 (10.46) | 3.05 (3.09) | 0.966 (0.967) | 431,814 (431,599) |
+| | corpus | **2.84** | **2.04** | 0.775 | 503,595 |
+| | linex | 3.97 | 3.52 | 0.371 | 431,006 |
+| `wc_1853/goblin_mention` | baseline | 5.85 (5.91) | 3.03 (3.10) | 0.970 (0.945) | 432,065 (432,368) |
+| | corpus | **3.70** | 2.72 | 0.942 | 503,444 |
+| | linex | 4.25 | **2.70** | 0.902 | 431,912 |
+
+For reference, at the same budget the paper's SFT has a forward KL of 1.40 and a reverse KL of 1.03 on `wc_0670`, and 2.21 and 2.65 on `wc_1853`. At twice the budget (B = 2^21, about 8.65 × 10^5 inferences), the paper's GFlowNet has a forward KL of 10.35 on `wc_0670` and 4.74 on `wc_1853`.
+
+The baselines were also run on rorqual (H100) as a cross-cluster check:
+
+| Task | Forward KL | Reverse KL | Hit rate |
+|---|---|---|---|
+| `wc_0670` | 10.65 | 3.05 | 0.960 |
+| `wc_1853` | 5.89 | 3.02 | 0.961 |
+
+So the run-to-run spread at a fixed seed is about 0.1 in forward KL.
+
+### `gflownet+composition`
+
+| Task | Baseline | Corpus | Linex | Paper `gfn+composition` | Paper `sft+composition` |
+|---|---|---|---|---|---|
+| `wc_0670` forward / reverse KL | 3.24 / 2.65 | **1.58 / 1.50** | 2.95 / 2.67 | 3.22 / 2.83 | 1.40 / 1.03 |
+| `wc_1853` forward / reverse KL | 3.24 / 2.02 | **1.16 / 1.11** | 2.38 / 1.51 | 3.37 / 1.90 | 1.77 / 2.17 |
+
+### Verdict
+
+**Corpus replay helps a lot on both tasks, at about 17% more inferences.**
+
+- **Scores.**
+  - Forward KL falls from 10.76 to 2.84 on `wc_0670` and from 5.85 to 3.70 on `wc_1853`.
+  - Reverse KL also improves.
+  - On `wc_0670` the hit rate falls from 0.97 to 0.78, because the sampler now spreads mass beyond its few modes. On `wc_1853` it barely changes.
+- **Cost.**
+  - The pass budget is the same, but construction inferences rise from about 432k to about 504k. Bought hits cost one inference per pass, while fresh generations cost 2 inferences per 5 passes.
+  - Extra compute does not explain the gain: the baseline at twice the budget barely moves (forward KL 10.35 and 4.74).
+- **With composition.** Forward KL is 1.58 and 1.16, near or better than SFT+composition.
+- **Where it cannot help.** On the rarest tasks, 10% of the budget buys about one hit. Those are the tasks where GFlowNet falls back to a forward KL of 50.
+
+**Linex(0.25) is free and cuts forward KL, but it trades off hit rate on one task.**
+
+- Forward KL falls to 3.97 and 4.25, and reverse KL improves on `wc_1853`.
+- On `wc_0670`, reverse KL worsens from 3.05 to 3.52 and the hit rate drops from 0.97 to 0.37: the zero-avoiding loss also puts mass on misses.
+
+**Caveats.**
+
+- This is one replicate of two tasks, both common enough that GFlowNet finds hits. These are benchmark tasks, not tuning pairs.
+- The values f = 0.1, p = 0.25 and a = 0.25 were chosen before any run and were not tuned. Choosing them on these results would be tuning on the test set.
+- The gains, 2 to 8 in forward KL, are far above the 0.1 spread between the two baseline runs. They are still not a benchmark claim.
+
+**Next steps** (none launched; each needs approval):
+
+- A corpus+Linex run.
+- A sweep of f and a on the tuning pairs.
+- A full 21 × 3 run at B = 2^20, about 63 runs × 5 GPU-hours ≈ 300 GPU-hours per variant.
