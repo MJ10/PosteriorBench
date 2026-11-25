@@ -169,8 +169,54 @@ So the run-to-run spread at a fixed seed is about 0.1 in forward KL.
 - The values f = 0.1, p = 0.25 and a = 0.25 were chosen before any run and were not tuned. Choosing them on these results would be tuning on the test set.
 - The gains, 2 to 8 in forward KL, are far above the 0.1 spread between the two baseline runs. They are still not a benchmark claim.
 
+**Next steps:** see the end of the rare-task section below.
+
+## Rare tasks
+
+GFlowNet falls back on the three rarest tasks at every budget up to 2^21 in the paper. Their forward KL is 50 and their reverse KL 79–150. They are 3 of the 21 tasks, so on their own they add about 7 (3 × 50 / 21) to the method's mean forward KL. Six runs were made on rorqual (one H100 each) from commit `1824091`, at B = 2^20, replicate 0, with `corpus_probability=0.25` and `corpus_budget_fraction` f = 0.1 or 0.3.
+
+| Task | p̂(S) | f | Hits bought | Native hit rate | Forward KL | Reverse KL | Composition forward / reverse KL | Construction inferences |
+|---|---|---|---|---|---|---|---|---|
+| `wc_0842/word_repetition` | 1.80e-5 | 0.1 | 1 | 0.000 | 50 (fallback) | 106.73 | 50 / 106.73 | 476,382 |
+| | | 0.3 | 5 | **0.171** | **7.91** | **7.54** | 7.91 / 7.54 | 603,211 |
+| `wc_1301/chatgpt_mention` | 1.02e-5 | 0.1 | 1 | 0.000 | 50 (fallback) | 150.34 | 50 / 150.34 | 500,225 |
+| | | 0.3 | 3 | **0.531** | **7.94** | **4.22** | **6.33 / 3.62** | 611,644 |
+| `wc_1802/contrastive_phrasing` | 1.47e-5 | 0.1 | 1 | 0.000 | 50 (fallback) | 79.05 | 50 / 79.05 | 482,330 |
+| | | 0.3 | 4 | 0.002 | 50 (fallback) | 79.05 | 50 / 79.05 | 601,153 |
+
+On `wc_0842` the composition step kept the plain sampler (one inference per response), so the two rows are equal.
+
+For comparison, the best of the paper's other methods on the same tasks and replicate:
+
+| Method (paper) | Construction inferences | `wc_0842` forward / reverse KL | `wc_1301` forward / reverse KL | `wc_1802` forward / reverse KL |
+|---|---|---|---|---|
+| `mixture-eb16+composition` K = 16384 | 370k–417k | 11.03 / 11.14 | 8.01 / 5.35 | 16.28 / 16.66 |
+| `mixture-eb16+composition` K = 32768 | 734k–826k | 11.40 / 10.58 | 8.86 / 5.10 | 14.93 / 12.00 |
+| `prompt-ebjc+composition` K = 32768 | 729k–821k | 11.77 / 10.06 | 9.37 / 5.08 | **12.58 / 9.80** |
+| `sft+composition` B = 2^20 | 914k | 34.88 / 68.57 | 7.74 / 7.81 | 18.14 / 22.86 |
+| `gfn+composition` B = 2^22 | 1.73M | 8.93 / 3.22 (mean of 3) | 21.70 / 52.46 (mean of 3) | 36.30 / 53.98 (mean of 3) |
+| **corpus f = 0.3** (this run) | 601k–613k | **7.91** / 7.54 | **6.33 / 3.62** | 50 / 79.05 |
+
+**Verdict.**
+
+- **Ten percent is not enough.** At f = 0.1 the run buys one hit. The sampler then never produces a hit on its own, and the result is the fallback as before.
+- **Thirty percent clears the fallback on two of the three tasks.** With 3–5 bought hits, `wc_0842` and `wc_1301` go from 50 to a forward KL of about 6–8. That is better than every method in the paper on those tasks at up to 914k inferences, and better than the paper's GFlowNet at four times the budget.
+- **`wc_1802` still fails.** Four bought hits gave 2 hits in 1,024 evaluation draws. The bought hits alone do not teach the sampler this task. Local search (below) is the planned next try.
+- **Cost.** These runs spend about 600k construction inferences against about 432k for the baseline, and about 40% more than `mixture-eb16+composition` K = 16384. The fair comparisons are with methods at 600k–900k, as in the table.
+- **What it means for the benchmark, roughly.** With composition, the rare-task mean would be (7.91 + 6.33 + 50) / 3 = 21.4 in forward KL and (7.54 + 3.62 + 79.05) / 3 = 30.1 in reverse KL, against 50 and 112 now. That is under the about 24 / 36 that GFlowNet would need to have the best mean in the paper. This is a projection from one replicate, not a measurement; see the caveats.
+
+**Caveats.**
+
+- **f = 0.3 was chosen after looking at rare-task results.** f = 0.1 was fixed in advance. f = 0.3 was added as a second arm on the same rare tasks and is the arm that worked. Reporting f = 0.3 as the method's setting would be tuning on the test set. A fair version needs a rule fixed before the runs. One candidate is to set f per task from p̂(S), which the task table gives every method, so that it buys a fixed number of hits. That rule would need to be set on the tuning pairs, which are common tasks, so it is an extrapolation.
+- **One replicate.** With 1–5 bought hits, which hits are bought is luck, and replicates 1 and 2 may differ a lot.
+- **Non-rare tasks at f = 0.3 are untested.** The common-task results above are at f = 0.1.
+
+**Further runs (batch 2, running at the time of writing):** f = 0.3 with `corpus_probability=0.5`, and f = 0.3 with Linex, on each rare task, plus corpus f = 0.1 with Linex on `wc_0670` and `wc_1853`.
+
+**Local search.** The `local_search_probability` setting was smoke-tested on `wc_1301` (f = 0.3, local 0.25, 8 updates). 580 of its 920 local-search responses were hits (63%), against 0 of 1,680 fresh responses. A few bought hits become many new and different hits to train on. No full run has been made.
+
 **Next steps** (none launched; each needs approval):
 
-- A corpus+Linex run.
-- A sweep of f and a on the tuning pairs.
-- A full 21 × 3 run at B = 2^20, about 63 runs × 5 GPU-hours ≈ 300 GPU-hours per variant.
+- Local search on the three rare tasks at f = 0.1 and 0.3: 6 runs, about 18 GPU-hours.
+- A rule for f from p̂(S), fixed on the tuning pairs, then a sweep of f and a there.
+- A full 21 × 3 run at B = 2^20 with the fixed rule: about 63 runs × 5 GPU-hours ≈ 300 GPU-hours per variant.
