@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 LOSS_FUNCTIONS = ("square", "linex")
+OBJECTIVES = ("subtb", "vargrad")
 # Settings beyond the paper's; their defaults reproduce the paper's runs.
 ADDED_SETTINGS = (
     "corpus_budget_fraction",
@@ -12,6 +13,7 @@ ADDED_SETTINGS = (
     "loss_function",
     "loss_shape",
     "local_search_probability",
+    "objective",
 )
 
 
@@ -54,7 +56,10 @@ class Settings:
         first k content tokens for k uniform in [0, its content length), and draws the group's
         responses as that prefix followed by the policy's continuation at temperature 1, after
         Local Search GFlowNets (Kim et al., ICLR 2024). The responses are scored, charged and
-        offered to the buffer as fresh responses, each charged as a whole generation."""
+        offered to the buffer as fresh responses, each charged as a whole generation.
+    objective: the loss of a group. "subtb", the paper's subtrajectory balance (`subtb`);
+        "vargrad", trajectory balance with log Z estimated from the group itself (`vargrad`),
+        which needs no prefix flows. `loss_function` penalizes the residuals of either."""
 
     budgets: tuple[int, ...] = (2**20, 2**21, 2**22)
     update_caps: tuple[int, ...] = (8, 16, 32, 64, 128, 256)
@@ -83,6 +88,7 @@ class Settings:
     loss_function: str = "square"
     loss_shape: float = 1.0
     local_search_probability: float = 0.0
+    objective: str = "subtb"
 
     def __post_init__(self) -> None:
         if not self.budgets and not self.update_caps:
@@ -143,6 +149,10 @@ class Settings:
             raise ValueError("loss_shape is positive")
         if not 0 <= self.local_search_probability <= 1:
             raise ValueError("local_search_probability lies in [0, 1]")
+        if self.objective not in OBJECTIVES:
+            raise ValueError(f"objective is one of {OBJECTIVES}, got {self.objective!r}")
+        if self.objective == "vargrad" and self.responses_per_group < 2:
+            raise ValueError("objective vargrad needs at least two responses per group")
         if self.generation_batch_size < self.responses_per_group:
             raise ValueError("generation_batch_size must hold one group of responses")
 

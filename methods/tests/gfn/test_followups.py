@@ -1,5 +1,5 @@
 """Tests of the GFlowNet settings added beyond the paper (gfn/FOLLOWUPS.md): corpus-hit replay,
-the Linex loss and local search. Each is off by default, and at its default the method is the paper's."""
+the Linex loss, local search and the VarGrad objective. Each is off by default, and at its default the method is the paper's."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from posteriorbench import ledger as pb_ledger
 
 from posteriorbench_methods.gfn import cost, reward
 from posteriorbench_methods.gfn import settings as gfn_settings
-from posteriorbench_methods.gfn import subtb, training
+from posteriorbench_methods.gfn import subtb, teacher_forcing, training, vargrad
 
 Settings = gfn_settings.Settings
 
@@ -28,6 +28,7 @@ def test_added_settings_default_off() -> None:
     assert settings.corpus_budget_fraction == 0 and settings.corpus_probability == 0
     assert settings.loss_function == "square"
     assert settings.local_search_probability == 0
+    assert settings.objective == "subtb"
     assert set(gfn_settings.ADDED_SETTINGS) <= {f.name for f in dataclasses.fields(Settings)}
 
 
@@ -42,6 +43,8 @@ def test_added_settings_default_off() -> None:
         {"loss_shape": 0.0},
         {"local_search_probability": 1.5},
         {"local_search_probability": -0.1},
+        {"objective": "db"},
+        {"objective": "vargrad", "responses_per_group": 1, "generation_batch_size": 1},
     ],
 )
 def test_invalid_added_settings(changes: dict[str, Any]) -> None:
@@ -64,6 +67,12 @@ def test_training_run_settings_leave_out_defaults() -> None:
         Settings(local_search_probability=0.2),
     )
     assert local["local_search_probability"] == 0.2
+    assert "objective" not in local
+    vargrad_run = training.training_run_settings(
+        context,  # type: ignore[arg-type]
+        Settings(objective="vargrad"),
+    )
+    assert vargrad_run["objective"] == "vargrad"
 
 
 # Group plans
@@ -487,3 +496,86 @@ def test_draw_after_extends_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen == [((1, 2, 4, 5, 6), 7, [group])]
     with pytest.raises(ValueError):
         policy.draw_after(list(range(10)), group)
+
+
+# VarGrad
+
+
+def test_vargrad_square_is_group_variance() -> None:
+    generator = torch.Generator().manual_seed(0)
+    logq = -torch.rand(6, generator=generator, dtype=torch.float64) * 30
+    log_rewards = -torch.rand(6, generator=generator, dtype=torch.float64) * 30
+    total = vargrad.vargrad_terms(logq, log_rewards)
+    expected = 6 * (log_rewards - logq).var(unbiased=False)
+    assert math.isclose(float(total), float(expected), rel_tol=1e-12)
+
+
+def test_vargrad_zero_when_policy_is_proportional_to_reward() -> None:
+    log_rewards = torch.tensor([-40.0, -12.0, -3.0, -25.0], dtype=torch.float64)
+    total = vargrad.vargrad_terms(log_rewards - 7.5, log_rewards)
+    assert abs(float(total)) < 1e-20
+
+
+@pytest.mark.parametrize("loss_function", ["square", "linex"])
+def test_vargrad_gradient_holds_log_z_fixed(loss_function: str) -> None:
+    logq = torch.tensor([-10.0, -4.0, -20.0, -6.0], dtype=torch.float64, requires_grad=True)
+    log_rewards = torch.tensor([-12.0, -3.0, -30.0, -5.0], dtype=torch.float64)
+    total = vargrad.vargrad_terms(logq, log_rewards, loss_function=loss_function, loss_shape=0.25)
+    total.backward()
+    log_z = float((log_rewards - logq.detach()).mean())
+    d = log_z + logq.detach() - log_rewards
+    if loss_function == "square":
+        expected = 2 * d
+    else:  # g'(d) of 2 (exp(-a d) + a d - 1) / a^2
+        expected = 2 * (1 - torch.exp(-0.25 * d)) / 0.25
+    assert logq.grad is not None and torch.allclose(logq.grad, expected, rtol=1e-12)
+    # With the square, holding log Z fixed gives the gradient of the variance itself.
+    if loss_function == "square":
+        free = logq.detach().clone().requires_grad_(True)
+        (4 * (log_rewards - free).var(unbiased=False)).backward()
+        assert free.grad is not None and torch.allclose(free.grad, logq.grad, rtol=1e-12)
+
+
+def test_vargrad_needs_two_responses() -> None:
+    with pytest.raises(ValueError):
+        vargrad.vargrad_terms(torch.zeros(1), torch.zeros(1))
+    with pytest.raises(ValueError):
+        vargrad.vargrad_terms(torch.zeros(3), torch.zeros(2))
+
+
+def test_add_gradient_vargrad_spans_forward_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """log q of response i is w[i] split over its tokens; the group of 5 spans two forward
+    batches of 3, and the gradient is that of one VarGrad loss over the whole group."""
+    settings = Settings(objective="vargrad", responses_per_group=5, groups_per_update=2)
+    run, _, _ = _training(settings, available=0, probability=0.5)
+    weights = torch.tensor([-9.0, -2.0, -15.0, -4.0, -6.0], requires_grad=True)
+    batches: list[int] = []
+
+    def token_scores(lm: Any, stops: Any, responses: Any) -> list[tuple[torch.Tensor, Any]]:
+        batches.append(len(responses))
+        return [
+            (weights[ids[0]] * torch.full((len(ids),), 1 / len(ids)), None) for ids in responses
+        ]
+
+    monkeypatch.setattr(teacher_forcing, "token_scores", token_scores)
+    run.policy = types.SimpleNamespace(
+        stop_token_ids=(7, 8),
+        forward_batch_size=3,
+        lm=None,
+        model=types.SimpleNamespace(train=lambda: None),
+    )
+    responses = [
+        _response([0, 7], hit=True, logp=-8.0),
+        _response([1, 5, 7], hit=False, logp=-1.0),
+        _response([2, 5, 5], hit=True, logp=-14.0),
+        _response([3, 7], hit=True, logp=-5.0),
+        _response([4, 5, 8], hit=False, logp=-2.0),
+    ]
+    loss, logq = run.add_gradient(responses)
+    assert batches == [3, 2]
+    assert np.allclose(logq, weights.detach().numpy(), atol=1e-5)
+    log_rewards = torch.tensor([r.log_reward(settings.epsilon) for r in responses])
+    d = (log_rewards - weights.detach()).mean() + weights.detach() - log_rewards
+    assert math.isclose(loss, float(d.square().mean()), rel_tol=1e-5)
+    assert weights.grad is not None
+    assert torch.allclose(weights.grad, 2 * d / 5 / 2, rtol=1e-5)

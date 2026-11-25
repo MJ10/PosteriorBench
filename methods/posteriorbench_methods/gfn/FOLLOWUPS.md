@@ -82,6 +82,7 @@ Both additions are settings, off by default. At their defaults the training run'
 | `loss_function` | `square` | `linex`: penalize each pairwise SubTB residual d with 2(e^{−a d} + a d − 1)/a² in place of d² |
 | `loss_shape` | 1.0 | a, for `linex` |
 | `local_search_probability` | 0 | once a hit is known (a bought corpus hit or a hit in the buffer), a group is a local-search group with this probability: it keeps the first k content tokens of one such hit, k uniform in [0, its content length), and draws the group's 20 responses as that prefix followed by the policy's continuation at temperature 1 |
+| `objective` | `subtb` | `vargrad`: the loss of a group is Σ_k g(d_k) / K with d_k = log Ẑ + log q(y_k) − log R(y_k) and log Ẑ = mean_k (log R(y_k) − log q(y_k)), held fixed (`vargrad.py`); g is the square or Linex. No prefix flows and no stop-token terms |
 
 The costs follow the rules of `cost.py`, and everything is charged to the ledger:
 
@@ -93,6 +94,8 @@ At f = 0.1 and B = 2^20, a task with p̂(S) = 0.0088 buys 912 hits for about 10%
 - **A local-search response:** charged as a whole fresh response, 2 inferences and 5 passes, although only its continuation is generated. It is offered to the buffer like a fresh response.
 
 The Linex loss costs nothing. The residuals between two stop tokens' flows have no direction and stay squared.
+
+- **The VarGrad objective** costs what SubTB costs: one teacher-forced forward and one backward per response, under the same charges. It needs only log p(y) of each response, which the p-scoring already gives, so nothing is added.
 
 ## Fairness
 

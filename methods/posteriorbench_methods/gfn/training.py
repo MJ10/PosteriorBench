@@ -3,7 +3,8 @@
 One update trains on `groups_per_update` groups of `responses_per_group` responses. A group is
 either replayed from the buffer or drawn fresh from the policy at a sampling temperature of its
 own (`plan_groups`); fresh responses are scored by the original model and offered to the buffer.
-Every group adds the gradient of its subtrajectory-balance loss, and one AdamW step follows.
+Every group adds the gradient of its loss, subtrajectory balance or, with `objective="vargrad"`,
+VarGrad trajectory balance, and one AdamW step follows.
 
 Checkpoints are saved on a schedule of updates and of budget counts, each with its selection
 draws, and one more closes each training budget (`budget_rule`). Every update draws from seeds of
@@ -37,7 +38,7 @@ from posteriorbench_methods.gfn import budget_rule, cost
 from posteriorbench_methods.gfn import policy as gfn_policy
 from posteriorbench_methods.gfn import replay, reward
 from posteriorbench_methods.gfn import settings as gfn_settings
-from posteriorbench_methods.gfn import subtb, teacher_forcing
+from posteriorbench_methods.gfn import subtb, teacher_forcing, vargrad
 
 METHOD = gfn_policy.METHOD
 
@@ -320,8 +321,10 @@ class Training:
         """Add the gradient of one group's loss to the gradients of the policy. The loss is the
         sum of the subtrajectory-balance terms of the group's responses, divided by their number
         and by the groups of an update. Returns the mean term, and log q of each response under
-        the policy."""
+        the policy. With `objective="vargrad"` the loss is that of `add_vargrad_gradient`."""
         settings, policy = self.settings, self.policy
+        if settings.objective == "vargrad":
+            return self.add_vargrad_gradient(responses)
         stops = policy.stop_token_ids
         terms = sum(
             subtb.term_count(
@@ -358,6 +361,39 @@ class Training:
             total += float(batch_sum.detach())
         assert counted == terms
         return total / max(terms, 1), logq
+
+    def add_vargrad_gradient(
+        self, responses: Sequence[reward.Response]
+    ) -> tuple[float, list[float]]:
+        """Add the gradient of one group's VarGrad loss (`vargrad`): the sum of its residual
+        penalties, divided by the number of responses and by the groups of an update. log Z is
+        estimated from the whole group, so the teacher-forced passes of all its responses are
+        kept until one backward pass; `forward_batch_size` splits the forward passes only.
+        Returns the mean penalty, and log q of each response under the policy."""
+        settings, policy = self.settings, self.policy
+        stops = policy.stop_token_ids
+        policy.model.train()
+        sums: list[torch.Tensor] = []
+        for lo in range(0, len(responses), policy.forward_batch_size):
+            batch = responses[lo : lo + policy.forward_batch_size]
+            for token_logq, _ in teacher_forcing.token_scores(
+                policy.lm, stops, [r.token_ids for r in batch]
+            ):
+                sums.append(token_logq.sum())
+        logq = torch.stack(sums)
+        log_rewards = logq.new_tensor([r.log_reward(settings.epsilon) for r in responses])
+        total = vargrad.vargrad_terms(
+            logq,
+            log_rewards,
+            loss_function=settings.loss_function,
+            loss_shape=settings.loss_shape,
+        )
+        loss = total / len(responses) / settings.groups_per_update
+        if not torch.isfinite(loss):
+            raise FloatingPointError("the GFlowNet loss is not finite")
+        loss.backward()
+        values = [float(value) for value in logq.detach().double().tolist()]
+        return float(total.detach()) / len(responses), values
 
     def buy_corpus_hits(self) -> None:
         """Before the first update: buy the corpus hits of `corpus_budget_fraction`, at random
